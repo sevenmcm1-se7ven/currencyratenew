@@ -37,7 +37,7 @@ STATIC_FONT_URLS = [
 ]
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
     "Content-Type": "application/json",
 }
@@ -51,7 +51,7 @@ def ensure_font_downloaded():
     if not os.path.exists(TMP_FONT_PATH):
         for url in STATIC_FONT_URLS:
             try:
-                r = requests.get(url, timeout=10)
+                r = requests.get(url, timeout=8)
                 if r.status_code == 200 and len(r.content) > 10000:
                     with open(TMP_FONT_PATH, "wb") as f:
                         f.write(r.content)
@@ -61,7 +61,21 @@ def ensure_font_downloaded():
     return None
 
 
-def fetch_bybit_mmk():
+def avg_valid_price(raw_prices):
+    vals = []
+    for p in raw_prices[:3]:
+        try:
+            num = float(str(p).replace(",", "").strip())
+            if num > 2000:
+                vals.append(num)
+        except Exception:
+            pass
+    if vals:
+        return sum(vals) / len(vals)
+    return None
+
+
+def fetch_bybit_p2p():
     url = "https://api2.bybit.com/fiat/otc/item/online"
     for side in ("0", "1"):
         payload = {
@@ -78,34 +92,32 @@ def fetch_bybit_mmk():
             "canTrade": False,
             "sortType": "OVERALL",
         }
-        r = requests.post(url, json=payload, headers=HEADERS, timeout=4)
+        r = requests.post(url, json=payload, headers=HEADERS, timeout=2.5)
         if r.status_code == 200:
-            data = r.json()
-            items = (data.get("result") or {}).get("items") or []
-            prices = [float(x["price"]) for x in items[:3] if x.get("price")]
-            if prices:
-                return sum(prices) / len(prices), "Bybit"
+            items = ((r.json() or {}).get("result") or {}).get("items") or []
+            price = avg_valid_price([x.get("price") for x in items])
+            if price:
+                return price, "Bybit P2P"
     return None, None
 
 
-def fetch_okx_mmk():
+def fetch_okx_p2p():
     url = (
         "https://www.okx.com/v3/c2c/tradingOrders/books"
         "?quoteCurrency=MMK&baseCurrency=USDT&side=sell"
         "&paymentMethod=all&userType=all&showTrade=false"
         "&showFollow=false&showAlreadyTraded=false&isAbleFilter=false"
     )
-    r = requests.get(url, headers=HEADERS, timeout=4)
+    r = requests.get(url, headers=HEADERS, timeout=2.5)
     if r.status_code == 200:
-        data = r.json()
-        orders = (data.get("data") or {}).get("sell") or []
-        prices = [float(x["price"]) for x in orders[:3] if x.get("price")]
-        if prices:
-            return sum(prices) / len(prices), "OKX"
+        sell_list = ((r.json() or {}).get("data") or {}).get("sell") or []
+        price = avg_valid_price([x.get("price") for x in sell_list])
+        if price:
+            return price, "OKX P2P"
     return None, None
 
 
-def fetch_bitget_mmk():
+def fetch_bitget_p2p():
     url = "https://www.bitget.com/v1/p2p/pub/adv/queryAdvList"
     payload = {
         "coinCode": "USDT",
@@ -114,39 +126,41 @@ def fetch_bitget_mmk():
         "pageNo": 1,
         "pageSize": 10,
     }
-    r = requests.post(url, json=payload, headers=HEADERS, timeout=4)
+    r = requests.post(url, json=payload, headers=HEADERS, timeout=2.5)
     if r.status_code == 200:
-        data = r.json()
-        items = (data.get("data") or {}).get("dataList") or []
-        prices = [float(x["price"]) for x in items[:3] if x.get("price")]
-        if prices:
-            return sum(prices) / len(prices), "Bitget"
+        adv_list = ((r.json() or {}).get("data") or {}).get("dataList") or []
+        price = avg_valid_price([x.get("price") for x in adv_list])
+        if price:
+            return price, "Bitget P2P"
     return None, None
 
 
-def get_exchange_rate():
-    for fn in (fetch_bybit_mmk, fetch_okx_mmk, fetch_bitget_mmk):
+def get_p2p_usd_sell():
+    for fn in (fetch_bybit_p2p, fetch_okx_p2p, fetch_bitget_p2p):
         try:
             rate, src = fn()
-            if rate and rate > 2000:
+            if rate:
                 return rate, src
         except Exception:
             pass
     return None, None
 
 
-def fetch_live_rates():
-    usd_sell, source_name = get_exchange_rate()
+def fetch_rates_fast():
+    usd_sell, source_name = get_p2p_usd_sell()
 
     if not usd_sell and CSV_URL:
         try:
-            resp = requests.get(CSV_URL, timeout=6)
+            resp = requests.get(CSV_URL, timeout=4)
             resp.encoding = "utf-8"
             reader = csv.reader(io.StringIO(resp.text))
             rows = [r for r in reader if any(c.strip() for c in r)]
             if len(rows) > 1 and len(rows[1]) >= 3:
-                usd_sell = float(rows[1][2].replace(",", "").strip())
-                source_name = "Sheet"
+                raw_val = rows[1][2].replace(",", "").strip()
+                parsed = float(raw_val)
+                if parsed > 2000:
+                    usd_sell = parsed
+                    source_name = "Sheet P2P"
         except Exception:
             pass
 
@@ -158,7 +172,7 @@ def fetch_live_rates():
 
     fx_rates = {}
     try:
-        fx_res = requests.get("https://open.er-api.com/v6/latest/USD", timeout=4)
+        fx_res = requests.get("https://open.er-api.com/v6/latest/USD", timeout=3)
         if fx_res.status_code == 200:
             fx_rates = (fx_res.json() or {}).get("rates") or {}
     except Exception:
@@ -312,13 +326,13 @@ def handle_update(data):
 
     if text.startswith(("/rates", "/currencyrates")):
         try:
-            rows, time_str, source_name = fetch_live_rates()
+            rows, time_str, source_name = fetch_rates_fast()
             photo = generate_rate_image(rows, time_str, source_name)
             requests.post(
                 f"{TELEGRAM_API}/sendPhoto",
                 data={"chat_id": chat_id},
                 files={"photo": ("rates.png", photo, "image/png")},
-                timeout=25,
+                timeout=20,
             )
         except Exception as e:
             requests.post(
