@@ -8,20 +8,40 @@ from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CSV_URL = os.environ.get("CSV_URL")
-TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
+CSV_URL = (os.environ.get("CSV_URL") or "").strip()
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FONT_PATH = os.path.join(BASE_DIR, "font.ttf")
 
 
 def fetch_rates():
-    resp = requests.get(CSV_URL, timeout=10)
+    if not CSV_URL:
+        raise ValueError("CSV_URL is not set in Environment Variables")
+
+    resp = requests.get(CSV_URL, timeout=15)
+    resp.raise_for_status()
     resp.encoding = "utf-8"
+
     reader = csv.reader(io.StringIO(resp.text))
-    rows = list(reader)
+    rows = [r for r in reader if any(cell.strip() for cell in r)]
+
     updated_note = ""
     if rows and len(rows[0]) >= 4 and rows[0][3].strip():
         updated_note = rows[0][3].strip()
-    return rows[1:], updated_note
+
+    data_rows = rows[1:] if len(rows) > 1 else []
+    return data_rows, updated_note
+
+
+def load_font(size):
+    if os.path.exists(FONT_PATH):
+        try:
+            return ImageFont.truetype(FONT_PATH, size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
 
 
 def generate_rate_image(rows, updated_note):
@@ -35,20 +55,16 @@ def generate_rate_image(rows, updated_note):
     img = Image.new("RGB", (width, height), bg_color)
     draw = ImageDraw.Draw(img)
 
-    try:
-        font_title = ImageFont.truetype("font.ttf", 40)
-        font_sub = ImageFont.truetype("font.ttf", 20)
-        font_row = ImageFont.truetype("font.ttf", 24)
-        font_note = ImageFont.truetype("font.ttf", 17)
-    except Exception:
-        font_title = font_sub = font_row = font_note = ImageFont.load_default()
+    font_title = load_font(40)
+    font_sub = load_font(20)
+    font_row = load_font(24)
+    font_note = load_font(17)
 
-    now_mm = (datetime.datetime.utcnow() + datetime.timedelta(hours=6, minutes=30)).strftime(
-        "%d %b %Y · %I:%M %p"
-    )
-    sub_text = f"Buy / Sell · MMK · {now_mm}"
-    if updated_note:
-        sub_text = f"Buy / Sell · MMK · {updated_note}"
+    now_mm = (
+        datetime.datetime.utcnow() + datetime.timedelta(hours=6, minutes=30)
+    ).strftime("%d %b %Y · %I:%M %p")
+
+    sub_text = f"Buy / Sell · MMK · {updated_note if updated_note else now_mm}"
 
     draw.text((40, 32), "Exchange Rates", fill=gold_color, font=font_title)
     draw.text((40, 88), sub_text, fill=gray, font=font_sub)
@@ -62,7 +78,10 @@ def generate_rate_image(rows, updated_note):
     for idx, row in enumerate(rows):
         if len(row) < 3 or not row[0].strip():
             continue
-        currency, buy, sell = row[0].strip(), row[1].strip(), row[2].strip()
+        currency = row[0].strip()
+        buy = row[1].strip()
+        sell = row[2].strip()
+
         if idx % 2 == 1:
             draw.rectangle([(35, y - 6), (805, y + 40)], fill=row_alt)
 
@@ -90,15 +109,15 @@ def home():
     return "Bot is running!", 200
 
 
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    data = request.get_json(silent=True) or {}
-    msg = data.get("message")
+def handle_update(data):
+    if not BOT_TOKEN:
+        return
+    msg = (data or {}).get("message")
     if not msg:
-        return "ok", 200
+        return
 
     chat_id = msg["chat"]["id"]
-    text = msg.get("text", "")
+    text = (msg.get("text") or "").strip()
 
     if text.startswith("/rates"):
         try:
@@ -108,7 +127,7 @@ def webhook():
                 f"{TELEGRAM_API}/sendPhoto",
                 data={"chat_id": chat_id},
                 files={"photo": ("rates.png", photo, "image/png")},
-                timeout=15,
+                timeout=20,
             )
         except Exception as e:
             requests.post(
@@ -116,6 +135,18 @@ def webhook():
                 json={"chat_id": chat_id, "text": f"Error: {str(e)}"},
                 timeout=10,
             )
+
+
+@app.route("/webhook", methods=["POST"])
+def webhook_static():
+    handle_update(request.get_json(silent=True) or {})
+    return "ok", 200
+
+
+@app.route("/<path:token_path>", methods=["POST"])
+def webhook_dynamic(token_path):
+    if BOT_TOKEN and token_path == BOT_TOKEN:
+        handle_update(request.get_json(silent=True) or {})
     return "ok", 200
 
 
