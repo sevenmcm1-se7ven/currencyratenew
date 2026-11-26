@@ -36,6 +36,12 @@ STATIC_FONT_URLS = [
     "https://github.com/notofonts/myanmar/raw/main/fonts/NotoSansMyanmar/unhinted/ttf/NotoSansMyanmar-Regular.ttf",
 ]
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+}
+
 
 def ensure_font_downloaded():
     for fp in FONT_CANDIDATES[:-1]:
@@ -45,7 +51,7 @@ def ensure_font_downloaded():
     if not os.path.exists(TMP_FONT_PATH):
         for url in STATIC_FONT_URLS:
             try:
-                r = requests.get(url, timeout=15)
+                r = requests.get(url, timeout=10)
                 if r.status_code == 200 and len(r.content) > 10000:
                     with open(TMP_FONT_PATH, "wb") as f:
                         f.write(r.content)
@@ -55,36 +61,128 @@ def ensure_font_downloaded():
     return None
 
 
-def clean_label(text):
-    t = (text or "").strip()
-    if "BINANCE P2P" in t.upper():
-        t = (
-            t.replace("Binance P2P ·", "")
-            .replace("BINANCE P2P ·", "")
-            .replace("Binance P2P", "")
-            .replace("BINANCE P2P", "")
-            .strip(" ·-")
-        )
-    return t
+def fetch_bybit_mmk():
+    url = "https://api2.bybit.com/fiat/otc/item/online"
+    for side in ("0", "1"):
+        payload = {
+            "userId": "",
+            "tokenId": "USDT",
+            "currencyId": "MMK",
+            "payment": [],
+            "side": side,
+            "size": "10",
+            "page": "1",
+            "amount": "",
+            "vaMaker": False,
+            "bulkProd": False,
+            "canTrade": False,
+            "sortType": "OVERALL",
+        }
+        r = requests.post(url, json=payload, headers=HEADERS, timeout=4)
+        if r.status_code == 200:
+            data = r.json()
+            items = (data.get("result") or {}).get("items") or []
+            prices = [float(x["price"]) for x in items[:3] if x.get("price")]
+            if prices:
+                return sum(prices) / len(prices), "Bybit"
+    return None, None
 
 
-def fetch_rates():
-    if not CSV_URL:
-        raise ValueError("CSV_URL is not set in Environment Variables")
+def fetch_okx_mmk():
+    url = (
+        "https://www.okx.com/v3/c2c/tradingOrders/books"
+        "?quoteCurrency=MMK&baseCurrency=USDT&side=sell"
+        "&paymentMethod=all&userType=all&showTrade=false"
+        "&showFollow=false&showAlreadyTraded=false&isAbleFilter=false"
+    )
+    r = requests.get(url, headers=HEADERS, timeout=4)
+    if r.status_code == 200:
+        data = r.json()
+        orders = (data.get("data") or {}).get("sell") or []
+        prices = [float(x["price"]) for x in orders[:3] if x.get("price")]
+        if prices:
+            return sum(prices) / len(prices), "OKX"
+    return None, None
 
-    resp = requests.get(CSV_URL, timeout=15)
-    resp.raise_for_status()
-    resp.encoding = "utf-8"
 
-    reader = csv.reader(io.StringIO(resp.text))
-    rows = [r for r in reader if any(cell.strip() for cell in r)]
+def fetch_bitget_mmk():
+    url = "https://www.bitget.com/v1/p2p/pub/adv/queryAdvList"
+    payload = {
+        "coinCode": "USDT",
+        "fiatCode": "MMK",
+        "side": 1,
+        "pageNo": 1,
+        "pageSize": 10,
+    }
+    r = requests.post(url, json=payload, headers=HEADERS, timeout=4)
+    if r.status_code == 200:
+        data = r.json()
+        items = (data.get("data") or {}).get("dataList") or []
+        prices = [float(x["price"]) for x in items[:3] if x.get("price")]
+        if prices:
+            return sum(prices) / len(prices), "Bitget"
+    return None, None
 
-    updated_note = ""
-    if rows and len(rows[0]) >= 4 and rows[0][3].strip():
-        updated_note = clean_label(rows[0][3].strip())
 
-    data_rows = rows[1:] if len(rows) > 1 else []
-    return data_rows, updated_note
+def get_exchange_rate():
+    for fn in (fetch_bybit_mmk, fetch_okx_mmk, fetch_bitget_mmk):
+        try:
+            rate, src = fn()
+            if rate and rate > 2000:
+                return rate, src
+        except Exception:
+            pass
+    return None, None
+
+
+def fetch_live_rates():
+    usd_sell, source_name = get_exchange_rate()
+
+    if not usd_sell and CSV_URL:
+        try:
+            resp = requests.get(CSV_URL, timeout=6)
+            resp.encoding = "utf-8"
+            reader = csv.reader(io.StringIO(resp.text))
+            rows = [r for r in reader if any(c.strip() for c in r)]
+            if len(rows) > 1 and len(rows[1]) >= 3:
+                usd_sell = float(rows[1][2].replace(",", "").strip())
+                source_name = "Sheet"
+        except Exception:
+            pass
+
+    if not usd_sell:
+        usd_sell = 5585.0
+        source_name = "Fallback"
+
+    usd_buy = usd_sell * 0.985
+
+    fx_rates = {}
+    try:
+        fx_res = requests.get("https://open.er-api.com/v6/latest/USD", timeout=4)
+        if fx_res.status_code == 200:
+            fx_rates = (fx_res.json() or {}).get("rates") or {}
+    except Exception:
+        pass
+
+    def calc(code, mult):
+        u = fx_rates.get(code)
+        if not u:
+            return "-"
+        return f"{(usd_sell / float(u)) * mult:,.2f}"
+
+    rows = [
+        ["USD (ဒေါ်လာ)", f"{usd_buy:,.2f}", f"{usd_sell:,.2f}"],
+        ["THB (ထိုင်းဘတ်)", calc("THB", 0.985), calc("THB", 1.0)],
+        ["JPY (ဂျပန်ယန်း)", calc("JPY", 0.985), calc("JPY", 1.0)],
+        ["CNY (တရုတ်ယွမ်)", calc("CNY", 0.985), calc("CNY", 1.0)],
+        ["MYR (မလေးရှားရင်းဂစ်)", calc("MYR", 0.985), calc("MYR", 1.0)],
+        ["SGD (စင်ကာပူဒေါ်လာ)", calc("SGD", 0.985), calc("SGD", 1.0)],
+    ]
+
+    now_mm = (
+        datetime.datetime.utcnow() + datetime.timedelta(hours=6, minutes=30)
+    ).strftime("%d %b %Y · %I:%M %p")
+    return rows, f"Updated · {now_mm}", source_name
 
 
 def load_font(size, resolved_font):
@@ -94,13 +192,6 @@ def load_font(size, resolved_font):
         except Exception:
             pass
     return ImageFont.load_default()
-
-
-def find_usd_row(rows):
-    for r in rows:
-        if len(r) >= 3 and "USD" in r[0].upper():
-            return r[0].strip(), r[1].strip(), r[2].strip()
-    return "USD", "-", "-"
 
 
 def draw_logo(img, draw, font_badge):
@@ -126,8 +217,8 @@ def draw_logo(img, draw, font_badge):
     draw.text((img.width - 172, 58), "RATE BOARD", fill=(250, 195, 25), font=font_badge)
 
 
-def generate_rate_image(rows, updated_note):
-    width, height = 1140, 1060
+def generate_rate_image(rows, time_str, source_name):
+    width, height = 1140, 960
     bg_color = (14, 14, 16)
     card_bg = (28, 28, 35)
     row_alt = (22, 22, 27)
@@ -151,16 +242,12 @@ def generate_rate_image(rows, updated_note):
     font_row = load_font(36, resolved_font)
     font_foot = load_font(25, resolved_font)
 
-    now_mm = (
-        datetime.datetime.utcnow() + datetime.timedelta(hours=6, minutes=30)
-    ).strftime("%d %b %Y · %I:%M %p")
-    time_str = updated_note if updated_note else now_mm
-
     draw.text((44, 24), "Exchange Rates", fill=gold_color, font=font_title)
     draw.text((44, 106), f"MMK · {time_str}", fill=gray, font=font_sub)
     draw_logo(img, draw, font_badge)
 
-    _, usd_buy, usd_sell = find_usd_row(rows)
+    usd_buy = rows[0][1]
+    usd_sell = rows[0][2]
     draw.rounded_rectangle(
         [(44, 160), (1096, 286)],
         radius=20,
@@ -180,35 +267,27 @@ def generate_rate_image(rows, updated_note):
 
     y = th_y + 72
     for idx, row in enumerate(rows):
-        if len(row) < 3 or not row[0].strip():
-            continue
-        currency = clean_label(row[0].strip())
-        buy = row[1].strip()
-        sell = row[2].strip()
-
+        currency, buy, sell = row[0], row[1], row[2]
         if idx % 2 == 1:
             draw.rounded_rectangle([(40, y - 12), (1100, y + 62)], radius=12, fill=row_alt)
 
         draw.text((52, y), currency, fill=white, font=font_row)
-        if buy and buy != "-":
-            draw.text((560, y), buy, fill=white, font=font_row)
-        else:
-            draw.text((605, y), "-", fill=gray, font=font_row)
-
-        if sell and sell != "-":
-            draw.text(
-                (835, y),
-                sell,
-                fill=green_color if "USD" in currency.upper() else white,
-                font=font_row,
-            )
-
+        draw.text((560, y), buy, fill=white, font=font_row)
+        draw.text(
+            (835, y),
+            sell,
+            fill=green_color if "USD" in currency.upper() else white,
+            font=font_row,
+        )
         y += 82
-        if y > height - 95:
-            break
 
     draw.line([(44, height - 70), (1096, height - 70)], fill=line_color, width=1)
-    draw.text((44, height - 52), "Type /rates for latest update", fill=gray, font=font_foot)
+    draw.text(
+        (44, height - 52),
+        f"Source: {source_name} · Type /rates for latest update",
+        fill=gray,
+        font=font_foot,
+    )
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -233,8 +312,8 @@ def handle_update(data):
 
     if text.startswith(("/rates", "/currencyrates")):
         try:
-            rows, updated_note = fetch_rates()
-            photo = generate_rate_image(rows, updated_note)
+            rows, time_str, source_name = fetch_live_rates()
+            photo = generate_rate_image(rows, time_str, source_name)
             requests.post(
                 f"{TELEGRAM_API}/sendPhoto",
                 data={"chat_id": chat_id},
