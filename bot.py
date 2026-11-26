@@ -37,7 +37,7 @@ STATIC_FONT_URLS = [
 ]
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json, text/plain, */*",
     "Content-Type": "application/json",
 }
@@ -160,4 +160,50 @@ def get_p2p_usd_sell():
 
 
 def fetch_rates_fast():
-    usd_sell, source
+    usd_sell, source_name = get_p2p_usd_sell()
+
+    if not usd_sell and CSV_URL:
+        try:
+            resp = requests.get(CSV_URL, timeout=4)
+            resp.encoding = "utf-8"
+            reader = csv.reader(io.StringIO(resp.text))
+            rows = [r for r in reader if any(c.strip() for c in r)]
+            if len(rows) > 1 and len(rows[1]) >= 3:
+                raw_val = rows[1][2].replace(",", "").strip()
+                parsed = float(raw_val)
+                if parsed > 2000:
+                    usd_sell = parsed
+                    source_name = "Sheet P2P"
+        except Exception:
+            pass
+
+    if not usd_sell:
+        usd_sell = 5585.0
+        source_name = "Fallback"
+
+    usd_buy = usd_sell * 0.985
+
+    fx_rates = {}
+    try:
+        fx_res = requests.get("https://open.er-api.com/v6/latest/USD", timeout=3)
+        if fx_res.status_code == 200:
+            fx_rates = (fx_res.json() or {}).get("rates") or {}
+    except Exception:
+        pass
+
+    def calc(code, mult):
+        u = fx_rates.get(code)
+        if not u:
+            return "-"
+        return f"{(usd_sell / float(u)) * mult:,.2f}"
+
+    rows = [
+        ["USD (ဒေါ်လာ)", f"{usd_buy:,.2f}", f"{usd_sell:,.2f}"],
+        ["THB (ထိုင်းဘတ်)", calc("THB", 0.985), calc("THB", 1.0)],
+        ["JPY (ဂျပန်ယန်း)", calc("JPY", 0.985), calc("JPY", 1.0)],
+        ["CNY (တရုတ်ယွမ်)", calc("CNY", 0.985), calc("CNY", 1.0)],
+        ["MYR (မလေးရှားရင်းဂစ်)", calc("MYR", 0.985), calc("MYR", 1.0)],
+        ["SGD (စင်ကာပူဒေါ်လာ)", calc("SGD", 0.985), calc("SGD", 1.0)],
+    ]
+
+    now_mm
