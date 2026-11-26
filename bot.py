@@ -200,4 +200,22 @@ def fetch_rates_fast():
     rows = [
         ["USD (ဒေါ်လာ)", f"{usd_buy:,.2f}", f"{usd_sell:,.2f}"],
         ["THB (ထိုင်းဘတ်)", calc("THB", 0.985), calc("THB", 1.0)],
-        ["JPY (ဂျပန်ယန်း)", calc("JPY",
+        ["JPY (ဂျပန်ယန်း)", calc("JPY", 0.985), calc("JPY", 1.0)],
+        ["CNY (တရုတ်ယွမ်)", calc("CNY", 0.985), calc("CNY", 1.0)],
+        ["MYR (မလေးရှားရင်းဂစ်)", calc("MYR", 0.985), calc("MYR", 1.0)],
+        ["SGD (စင်ကာပူဒေါ်လာ)", calc("SGD", 0.985), calc("SGD", 1.0)],
+    ]
+
+    now_mm = (
+        datetime.datetime.utcnow() + datetime.timedelta(hours=6, minutes=30)
+    ).strftime("%d %b %Y · %I:%M %p")
+    return rows, f"Updated · {now_mm}", source_name
+
+
+def load_font(size, resolved_font):
+    local_font = os.path.join(BASE_DIR, "font.ttf")
+    for fp in (local_font, resolved_font):
+        if fp and os.path.exists(fp) and os.path.getsize(fp) > 10000:
+            try:
+                return ImageFont.truetype(fp, size)
+            except Exception:
