@@ -14,7 +14,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "User-Agent": "Mozilla/5.0",
     "Accept": "application/json",
     "Content-Type": "application/json",
 }
@@ -40,13 +40,7 @@ def get_p2p():
     try:
         r = requests.post(
             "https://api2.bybit.com/fiat/otc/item/online",
-            json={
-                "tokenId": "USDT",
-                "currencyId": "MMK",
-                "side": "0",
-                "size": "10",
-                "page": "1",
-            },
+            json={"tokenId": "USDT", "currencyId": "MMK", "side": "0", "size": "10", "page": "1"},
             headers=HEADERS,
             timeout=2.5,
         )
@@ -75,13 +69,7 @@ def get_p2p():
     try:
         r = requests.post(
             "https://www.bitget.com/v1/p2p/pub/adv/queryAdvList",
-            json={
-                "coinCode": "USDT",
-                "fiatCode": "MMK",
-                "side": 1,
-                "pageNo": 1,
-                "pageSize": 10,
-            },
+            json={"coinCode": "USDT", "fiatCode": "MMK", "side": 1, "pageNo": 1, "pageSize": 10},
             headers=HEADERS,
             timeout=2.5,
         )
@@ -135,19 +123,14 @@ def get_rates():
         ["MYR (မလေးရှားရင်းဂစ်)", cross("MYR", 0.985), cross("MYR", 1.0)],
         ["SGD (စင်ကာပူဒေါ်လာ)", cross("SGD", 0.985), cross("SGD", 1.0)],
     ]
-    now_str = (
-        datetime.datetime.utcnow() + datetime.timedelta(hours=6, minutes=30)
-    ).strftime("%d %b %Y · %I:%M %p")
+    now_str = (datetime.datetime.utcnow() + datetime.timedelta(hours=6, minutes=30)).strftime(
+        "%d %b %Y · %I:%M %p"
+    )
     return table, f"Updated · {now_str}", src
 
 
 def pick_font(size):
-    for name in (
-        "font.ttf",
-        "NotoSansMyanmar-Regular.ttf",
-        "NotoSansMyanmar-Medium.ttf",
-        "Pyidaungsu.ttf",
-    ):
+    for name in ("font.ttf", "NotoSansMyanmar-Regular.ttf", "NotoSansMyanmar-Medium.ttf", "Pyidaungsu.ttf"):
         p = os.path.join(BASE_DIR, name)
         if os.path.exists(p) and os.path.getsize(p) > 10000:
             try:
@@ -168,11 +151,7 @@ def draw_logo(img, draw, f_badge):
                 return
             except Exception:
                 pass
-    draw.rounded_rectangle(
-        [(img.width - 196, 32), (img.width - 44, 114)],
-        radius=16,
-        fill=(32, 32, 38),
-    )
+    draw.rounded_rectangle([(img.width - 196, 32), (img.width - 44, 114)], radius=16, fill=(32, 32, 38))
     draw.text((img.width - 172, 58), "RATE BOARD", fill=(250, 195, 25), font=f_badge)
 
 
@@ -193,3 +172,84 @@ def make_image(table, time_str, src):
     draw.text((44, 24), "Exchange Rates", fill=(255, 200, 25), font=f_title)
     draw.text((44, 106), f"MMK · {clean_txt(time_str)}", fill=(195, 195, 205), font=f_sub)
     draw_logo(img, draw, f_badge)
+
+    draw.rounded_rectangle([(44, 160), (1096, 286)], radius=20, fill=(28, 28, 35), outline=(255, 200, 25), width=2)
+    draw.text((70, 172), "Dollar to MMK (1 USD)", fill=(255, 200, 25), font=f_lbl)
+    draw.text((70, 218), f"Buy: {table[0][1]} MMK", fill=(255, 255, 255), font=f_val)
+    draw.text((585, 218), f"Sell: {table[0][2]} MMK", fill=(80, 230, 140), font=f_val)
+
+    draw.text((48, 316), "Currency", fill=(255, 200, 25), font=f_th)
+    draw.text((585, 316), "Buy", fill=(255, 200, 25), font=f_th)
+    draw.text((865, 316), "Sell", fill=(255, 200, 25), font=f_th)
+    draw.line([(44, 368), (1096, 368)], fill=(68, 68, 80), width=2)
+
+    y = 388
+    for i, r in enumerate(table):
+        cur = clean_txt(r[0])
+        if i % 2 == 1:
+            draw.rounded_rectangle([(40, y - 12), (1100, y + 62)], radius=12, fill=(22, 22, 27))
+        draw.text((52, y), cur, fill=(255, 255, 255), font=f_row)
+        draw.text((560, y), r[1], fill=(255, 255, 255), font=f_row)
+        draw.text((835, y), r[2], fill=(80, 230, 140) if "USD" in cur.upper() else (255, 255, 255), font=f_row)
+        y += 82
+
+    draw.line([(44, h - 70), (1096, h - 70)], fill=(68, 68, 80), width=1)
+    draw.text((44, h - 52), f"Source: {clean_txt(src)} · Type /rates for latest update", fill=(195, 195, 205), font=f_foot)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+def reply_photo(chat_id, thread_id, photo):
+    form = {"chat_id": chat_id}
+    if thread_id is not None:
+        form["message_thread_id"] = thread_id
+    requests.post(
+        f"{TELEGRAM_API}/sendPhoto",
+        data=form,
+        files={"photo": ("rates.png", photo, "image/png")},
+        timeout=20,
+    )
+
+
+def reply_text(chat_id, thread_id, txt):
+    form = {"chat_id": chat_id, "text": txt}
+    if thread_id is not None:
+        form["message_thread_id"] = thread_id
+    requests.post(f"{TELEGRAM_API}/sendMessage", json=form, timeout=10)
+
+
+@app.route("/", methods=["GET"])
+def home():
+    return "Bot is running!", 200
+
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.get_json(silent=True) or {}
+    msg = data.get("message")
+    if msg and BOT_TOKEN:
+        chat_id = msg["chat"]["id"]
+        thread_id = msg.get("message_thread_id")
+        txt = (msg.get("text") or "").strip()
+        if txt.startswith(("/rates", "/currencyrates")):
+            try:
+                table, t_str, src = get_rates()
+                photo = make_image(table, t_str, src)
+                reply_photo(chat_id, thread_id, photo)
+            except Exception as e:
+                reply_text(chat_id, thread_id, f"Error: {e}")
+    return "ok", 200
+
+
+@app.route("/<path:token_path>", methods=["POST"])
+def webhook_token(token_path):
+    if BOT_TOKEN and token_path == BOT_TOKEN:
+        return webhook()
+    return "ok", 200
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
